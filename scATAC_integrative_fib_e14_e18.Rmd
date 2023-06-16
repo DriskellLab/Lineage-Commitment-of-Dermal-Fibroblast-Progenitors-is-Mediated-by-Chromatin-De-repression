@@ -1,0 +1,111 @@
+---
+title: "scATAC-integrated analysis"
+output: html_notebook
+---
+
+```{r}
+fib14 <- readRDS('fib_e14.rds')
+fib18 <- readRDS("fib_e18.rds")
+
+fib14$time <- 'e14'
+fib18$time <- 'e18'
+```
+
+
+```{r}
+combined <- RunTFIDF(combined)
+combined <- FindTopFeatures(combined, min.cutoff = 20)
+combined <- RunSVD(combined)
+combined <- RunUMAP(combined, dims = 2:40, reduction = 'lsi',umap.method = 'umap-learn')
+```
+```{r}
+combined$celltype <- combined@active.ident
+combined <- FindNeighbors(
+  object = combined,
+  reduction = 'lsi',
+  dims = 2:30
+)
+combined <- FindClusters(
+  object = combined,
+  algorithm = 3,
+  resolution = 0.1,
+  verbose = FALSE
+)
+```
+
+
+```{r}
+peaks <- CallPeaks(
+  object = fib,
+  group.by = "celltype",
+  macs2.path = "/home/phoenix/miniconda3/bin/macs2",
+  outdir = "/home/phoenix/scATAC"
+)
+```
+
+```{r}
+new_count <- FeatureMatrix(fragments = Fragments(fib), features = peaks, cells = colnames(fib))
+fib[['macs']]<-CreateChromatinAssay(counts = new_count, fragments = Fragments(fib), annotation = fib@assays$ATAC@annotation)
+DefaultAssay(fib)<-'macs'
+```
+
+```{r}
+fib <- RunTFIDF(fib)
+fib <- FindTopFeatures(fib, min.cutoff = 20)
+fib <- RunSVD(fib)
+
+fib <- FindNeighbors(
+  object = fib,
+  reduction = 'lsi',
+  dims = 2:30
+)
+fib <- RunUMAP(fib, dims = 2:30, reduction = 'lsi',umap.method = 'umap-learn')
+fib <- FindClusters(
+  object = fib,
+  algorithm = 3,
+  resolution = 0.1,
+  verbose = FALSE
+)
+```
+
+```{r}
+da_peaks_18 <- FindMarkers(
+  object = fib,
+  slot = 'counts',
+  group.by = 'time',
+  ident.1 = 'e18', 
+  ident.2 = "e14",
+  min.pct = 0.05,
+  only.pos = TRUE,
+  test.use = 'wilcox'
+)
+
+da_peaks_14 <- FindMarkers(
+  object = fib,
+  slot = 'counts',
+  group.by = 'time',
+  ident.1 = 'e14', 
+  ident.2 = "e18",
+  min.pct = 0.05,
+  only.pos = TRUE,
+  test.use = 'wilcox'
+)
+p1 <- ClosestFeature(fib,rownames(da_peaks_14))
+da_peaks_14$query_region <- rownames(da_peaks_14)
+da_peaks_14 <- merge(da_peaks_14,p1, by='query_region')
+
+p2 <- ClosestFeature(fib,rownames(da_peaks_18))
+da_peaks_18$query_region <- rownames(da_peaks_18)
+da_peaks_18 <- merge(da_peaks_18,p2, by='query_region')
+```
+
+```{r}
+write_csv(da_peaks_14,'da_peak_14.csv')
+write_csv(da_peaks_18,'da_peak_18.csv')
+```
+
+
+```{r}
+saveRDS(fib, 'fib1418_macs.rds')
+```
+

@@ -1,0 +1,828 @@
+---
+title: "fib rna atac"
+output: html_notebook
+---
+
+```{r}
+library(Signac)
+library(Seurat)
+library(GenomeInfoDb)
+library(EnsDb.Mmusculus.v79)
+library(ggplot2)
+library(patchwork)
+library(GenomicRanges)
+library(future)
+library(dplyr)
+library(tidyverse)
+library(JASPAR2020)
+library(TFBSTools)
+library(BSgenome.Mmusculus.UCSC.mm10)
+library(motifmatchr)
+plan("multisession",workers=6)
+options(future.globals.maxSize = 90000*1024^2)
+setwd("~/scATAC/")
+```
+
+
+
+```{r}
+fib.rna <- readRDS("./fibrna.rds")
+fib.atac <- readRDS("./fib1418_macs.rds")
+```
+
+```{r}
+DimPlot(fib.rna, reduction = "umap")
+```
+
+
+```{r}
+p1 <- DimPlot(fib.rna, group.by = "cell.type",cols=c("Dermal Papillae"="#133EDB","Papillary"="#1EAF08","Upper Progenitors"="#59DC67","Lower Progenitors"="#F01FE6","Reticular"="#B514AB","Intermediate"="#390A61","Pre-adipocytes"="#C055F9","Replicating Upper"="#2DE361"))+NoLegend() + ggtitle("RNA")
+p2 <- DimPlot(fib.atac,cols=c("Dermal Papillae"="#133EDB","Papillary"="#1EAF08","Upper Progenitors"="#59DC67","Lower Progenitors"="#F01FE6","Reticular"="#B514AB","Intermediate"="#390A61","Pre-adipocytes"="#C055F9"),label=TRUE) +NoLegend() + ggtitle("ATAC")
+p1 + p2
+```
+
+
+
+```{r}
+transfer.anchors <- FindTransferAnchors(reference = fib.rna, query = fib.atac, features = VariableFeatures(object = fib.rna),
+    reference.assay = "RNA", query.assay = "RNA", reduction = "cca")
+```
+
+
+
+```{r}
+celltype.predictions <- TransferData(anchorset = transfer.anchors, refdata = fib.rna$cell.type,
+    weight.reduction = fib.atac[["lsi"]], dims = 2:30)
+
+fib.atac <- AddMetaData(fib.atac, metadata = celltype.predictions)
+```
+
+```{r}
+g<-DimPlot(fib.atac, group.by = "predicted.id") + ggtitle("Predicted annotation")
+ggsave(plot=g,filename="transferrna.jpg",device="jpeg",dpi=300)
+```
+
+```{r}
+fib.atac <- RunUMAP(
+  object = fib.atac,
+  reduction = 'lsi',
+  dims = 2:30
+)
+fib.atac <- FindNeighbors(
+  object = fib.atac,
+  reduction = 'lsi',
+  dims = 2:30
+)
+fib.atac <- FindClusters(
+  object = fib.atac,
+  algorithm = 3,
+  resolution =0.5,
+  verbose = FALSE
+)
+DimPlot(object = fib.atac, label = TRUE) + NoLegend()
+```
+
+
+
+```{r}
+g1<-DimPlot(object = fib.atac)
+g1
+ggsave(plot=g1,filename="umap_color.jpg",device="jpeg",width=8,height=8)
+```
+```{r}
+levels(fib.atac)<-c("Dermal Papillae","Papillary 2","Papillary 1","Upper Progenitors 1","Upper Progenitors 3","Upper Progenitors 2","Lower Progenitors 1","Lower Progenitors 2","Lower Progenitors 3","Intermediate 1","Intermediate 2","Reticular 1","Reticular 2","Reticular 3","Pre-adipocytes 1")
+```
+
+```{r}
+DimPlot(object= fib.atac,,group.by = 'time',cols=c("blue2","darkorange"),raster.dpi=c(2048,2048))
+ggsave(plot=g1,filename="umap_time.pdf",device="pdf",width=8,height=8)
+```
+
+
+```{r}
+fib.atac <- RenameIdents(
+  object = fib.atac,
+  '0' = 'Papillary',
+  '1' = 'Lower Progenitors',
+  '2' = 'Upper Progenitors',
+  '3' = 'Reticular1',
+  '4' = 'Upper Progenitors',
+  '5' = 'Reticular',
+  '6' = 'Dermal Papillae',
+  '7' = 'Lower Progenitors',
+  '8' = 'Reticular',
+  '9' = 'Papillary',
+  '10' = 'Upper Progenitors',
+  '11' = 'Lower Progenitors',
+  '12' = 'Pre-adipocytes',
+  '13' = 'Reticular',
+  '14' = 'Reticular1'
+)
+```
+
+
+```{r}
+Idents(object=fib.atac)<-'seurat_clusters'
+```
+
+```{r}
+da_peaks_18 <- FindMarkers(
+  object = fib.atac,
+  slot = 'counts',
+  group.by = 'time',
+  ident.1 = 'e18', 
+  ident.2 = "e14",
+  min.pct = 0.2,
+  only.pos = TRUE,
+  test.use = 'wilcox'
+)
+
+da_peaks_14 <- FindMarkers(
+  object = fib.atac,
+  slot = 'counts',
+  group.by = 'time',
+  ident.1 = 'e14', 
+  ident.2 = "e18",
+  min.pct = 0.2,
+  only.pos = TRUE,
+  test.use = 'wilcox'
+)
+p1 <- ClosestFeature(fib.atac,rownames(da_peaks_14))
+da_peaks_14$query_region <- rownames(da_peaks_14)
+da_peaks_14 <- merge(da_peaks_14,p1, by='query_region')
+
+p2 <- ClosestFeature(fib.atac,rownames(da_peaks_18))
+da_peaks_18$query_region <- rownames(da_peaks_18)
+da_peaks_18 <- merge(da_peaks_18,p2, by='query_region')
+```
+```{r}
+write_csv(da_peaks_14,"da_peaks_14_macs.csv")
+write_csv(da_peaks_18,"da_peaks_18_macs.csv")
+```
+
+```{r}
+fib.markers <- FindAllMarkers(fib.atac, only.pos = TRUE, min.pct = 0.2, logfc.threshold = 0.2)
+```
+```{r}
+marker_dp <- dplyr::filter(fib.markers, cluster == 'Dermal Papillae')
+p_dp<- ClosestFeature(fib.atac,rownames(marker_dp))
+marker_dp$query_region <- rownames(marker_dp)
+marker_dp<- merge(marker_dp,p_dp, by='query_region')
+
+marker_pap <- dplyr::filter(fib.markers, cluster == 'Papillary')
+p1<- ClosestFeature(fib.atac,rownames(marker_pap))
+marker_pap$query_region <- rownames(marker_pap)
+marker_pap<- merge(marker_pap,p1, by='query_region')
+
+marker_inter <- dplyr::filter(fib.markers, cluster == 'Intermediate')
+p2<- ClosestFeature(fib.atac,rownames(marker_inter))
+marker_inter$query_region <- rownames(marker_inter)
+marker_inter<- merge(marker_inter,p2, by='query_region')
+
+marker_retic <- dplyr::filter(fib.markers, cluster == 'Reticular')
+p3<- ClosestFeature(fib.atac,rownames(marker_retic))
+marker_retic$query_region <- rownames(marker_retic)
+marker_retic<- merge(marker_retic,p3, by='query_region')
+
+marker_upper <- dplyr::filter(fib.markers, cluster == 'Upper Progenitors')
+p4<- ClosestFeature(fib.atac,rownames(marker_upper))
+marker_upper$query_region <- rownames(marker_upper)
+marker_upper<- merge(marker_upper,p4, by='query_region')
+
+marker_lower <- dplyr::filter(fib.markers, cluster == 'Lower Progenitors')
+p5<- ClosestFeature(fib.atac,rownames(marker_lower))
+marker_lower$query_region <- rownames(marker_lower)
+marker_lower<- merge(marker_lower,p5, by='query_region')
+
+marker_adipo <- dplyr::filter(fib.markers, cluster == 'Pre-adipocytes')
+p6<- ClosestFeature(fib.atac,rownames(marker_adipo))
+marker_adipo$query_region <- rownames(marker_adipo)
+marker_adipo<- merge(marker_adipo,p6, by='query_region')
+```
+
+
+```{r}
+write.csv(marker_dp, './celltype/dp.csv')
+write.csv(marker_pap,'./celltype/pap.csv')
+write.csv(marker_retic,'./celltype/retic.csv')
+write.csv(marker_inter,'./celltype/inter.csv')
+write.csv(marker_adipo,'./celltype/adipo.csv')
+write.csv(marker_upper,'./celltype/upper.csv')
+write.csv(marker_lower,'./celltype/lower.csv')
+```
+
+
+```{r}
+DefaultAssay(fib.atac)<-'macs'
+```
+
+
+
+```{r}
+g1<-VlnPlot(object = fib.atac, features = "nFeature_ATAC",group.by = 'time',cols=c("blue3","darkorange"))
+ggsave(plot=g1,filename="Cebpa.tiff",device="tiff",dpi=300)
+```
+
+
+```{r}
+CoveragePlot(
+  object = fib.atac,
+  region = "chr16-74093522-74093536",
+  extend.upstream = 10000,
+  extend.downstream = 10000
+)
+```
+
+```{r}
+fib <- readRDS("fib18.rds")
+```
+
+```{r}
+e18p<- read_csv("./newdiff/da_peak_18.csv")
+e14p <-read_csv("./newdiff/da_peak_14.csv")
+```
+```{r}
+peaks <- CallPeaks(
+  object = fib,
+  macs2.path = "/home/phoenix/miniconda3/bin/macs2",
+  outdir = "/home/phoenix/scATAC/macs/"
+)
+```
+```{r}
+new_count <- FeatureMatrix(fragments = Fragments(fib), features = e18p, cells = colnames(fib))
+```
+
+
+
+```{r}
+peak18<- ClosestFeature(fib,new_count@Dimnames[[1]])
+write_csv(peak18, "peak_atac18_macs.csv")
+```
+```{r}
+fib14 <-readRDS("fibe14.rds")
+
+```
+```{r}
+e14df<-annoGR2DF(e14p)
+e14df$query_region <- paste0(e14df$chr,"-",e14df$start,"-",e14df$end)
+```
+
+
+```{r}
+DefaultAssay(fib14)<-"ATAC"
+peak14<- ClosestFeature(fib14,e14df$query_region)
+write_csv(peak14, "peak_atac14_macs.csv")
+```
+
+```{r}
+new_count <- FeatureMatrix(fragments = Fragments(fib), features = e18p, cells = colnames(fib))
+fib[['macs']]<-CreateChromatinAssay(counts = new_count, fragments = Fragments(fib), annotation = fib@assays$ATAC@annotation)
+```
+
+```{r}
+DefaultAssay(fib.atac)<-"macs"
+```
+
+```{r}
+fib <- RunTFIDF(fib)
+fib <- FindTopFeatures(fib, min.cutoff = 20)
+fib <- RunSVD(fib)
+
+fib <- FindNeighbors(
+  object = fib,
+  reduction = 'lsi',
+  dims = 2:30
+)
+fib <- RunUMAP(fib, dims = 2:30, reduction = 'lsi',umap.method = 'umap-learn')
+fib <- FindClusters(
+  object = fib,
+  algorithm = 3,
+  resolution = 0.3,
+  verbose = FALSE
+)
+```
+
+
+```{r}
+fib.markers_1 <- FindAllMarkers(fib, only.pos = TRUE, min.pct = 0.2, logfc.threshold = 0.25)
+```
+
+```{r}
+p<-DimPlot(fib.atac, cols=c("Dermal Papillae"="#133EDB","Papillary"="#1EAF08","Upper Progenitors"="#59DC67","Lower Progenitors"="#F01FE6","Reticular"="#B514AB","Intermediate"="#390A61","Pre-adipocytes"="#C055F9"))
+ggsave(plot=p,filename="umap_colored.jpg",device="jpeg",dpi=300)
+```
+
+
+```{r}
+marker0 <- dplyr::filter(fib.markers_1, cluster == '0')
+marker1 <- dplyr::filter(fib.markers_1, cluster == '1')
+marker2 <- dplyr::filter(fib.markers_1, cluster == '2')
+marker3 <- dplyr::filter(fib.markers_1, cluster == '3')
+marker4 <- dplyr::filter(fib.markers_1, cluster == '4')
+marker5 <- dplyr::filter(fib.markers_1, cluster == '5')
+marker6 <- dplyr::filter(fib.markers_1, cluster == '6')
+marker7 <- dplyr::filter(fib.markers_1, cluster == '7')
+marker8 <- dplyr::filter(fib.markers_1, cluster == '8')
+```
+
+
+```{r}
+p0<- ClosestFeature(fib,rownames(marker0))
+marker0$query_region <- rownames(marker0)
+marker0<- merge(marker0,p0, by='query_region')
+
+p1<- ClosestFeature(fib,rownames(marker1))
+marker1$query_region <- rownames(marker1)
+marker1<- merge(marker1,p1, by='query_region')
+
+p2<- ClosestFeature(fib,rownames(marker2))
+marker2$query_region <- rownames(marker2)
+marker2<- merge(marker2,p2, by='query_region')
+
+p3<- ClosestFeature(fib,rownames(marker3))
+marker3$query_region <- rownames(marker3)
+marker3<- merge(marker3,p3, by='query_region')
+
+p4<- ClosestFeature(fib,rownames(marker4))
+marker4$query_region <- rownames(marker4)
+marker4<- merge(marker4,p4, by='query_region')
+
+p5<- ClosestFeature(fib,rownames(marker5))
+marker5$query_region <- rownames(marker5)
+marker5<- merge(marker5,p5, by='query_region')
+
+p6<- ClosestFeature(fib,rownames(marker6))
+marker6$query_region <- rownames(marker6)
+marker6<- merge(marker6,p6, by='query_region')
+
+p7<- ClosestFeature(fib,rownames(marker7))
+marker7$query_region <- rownames(marker7)
+marker7<- merge(marker7,p7, by='query_region')
+
+p8<- ClosestFeature(fib,rownames(marker8))
+marker8$query_region <- rownames(marker8)
+marker8<- merge(marker8,p8, by='query_region')
+```
+
+
+```{r}
+write.csv(marker0,"./newcombine/pap1.csv")
+write.csv(marker1,"./newcombine/inter.csv")
+write.csv(marker2,"./newcombine/retic1.csv")
+write.csv(marker3,"./newcombine/dp.csv")
+write.csv(marker4,"./newcombine/pap2.csv")
+write.csv(marker5,"./newcombine/retic2.csv")
+write.csv(marker6,"./newcombine/pap3.csv")
+write.csv(marker7,"./newcombine/adipo.csv")
+write.csv(marker8,"./newcombine/inter2.csv")
+```
+
+
+```{r}
+g1<-DimPlot(fib,cols=c('0'='darkgreen','1'='coral4','2'='deeppink3','3'='blue2','4'='aquamarine4','5'='darkmagenta','6'='chartreuse4','7'='blueviolet','8'='coral3'),raster.dpi = c(2048,2048))
+ggsave(plot=g1,filename="umap_fib18.pdf",device="pdf",width=8,height=8)
+```
+
+```{r}
+levels(fib.atac)<-c("Dermal Papillae","Papillary","Upper Progenitors","Lower Progenitors","Reticular","Reticular1","Pre-adipocytes")
+```
+
+```{r}
+gene.ranges <- genes(EnsDb.Mmusculus.v79)
+seqlevelsStyle(gene.ranges) <- 'UCSC'
+gene.ranges <- gene.ranges[gene.ranges$gene_biotype == 'protein_coding', ]
+gene.ranges <- keepStandardChromosomes(gene.ranges, pruning.mode = 'coarse')# extend coordinates upstream to include the promoter
+genebodyandpromoter.coords <- Extend(x = gene.ranges, upstream = 2000, downstream = 0)#Signac default, holds each gene's genomic coordinates
+genebodyandpromoter.coords.df <- as.data.frame(genebodyandpromoter.coords)#convert the Granges object of all genes' coordinates to a dataframe for easy datamining
+gene_coords <- data.frame("Gene" = genebodyandpromoter.coords.df$gene_name, "Coord" = paste(genebodyandpromoter.coords.df$seqnames, "-", genebodyandpromoter.coords.df$start, "-", genebodyandpromoter.coords.df$end, sep = ''))
+gene_key <- gene_coords$Gene; coords_key <- gene_coords$Coord
+
+```
+
+
+
+```{r}
+cp<-CoveragePlot(
+  object = fib.atac,
+  region = "chr4-123229076-123229090",
+  extend.upstream = 5000,
+  extend.downstream = 5000
+) & scale_fill_manual(values = c("#133EDB","#1EAF08","#59DC67","#F01FE6","#B514AB","#390A61","#C055F9"))
+cp
+ggsave(plot=cp, filename="peak_pdlim3_ebf1.jpg",device="jpeg",dpi=300)
+```
+
+
+```{r}
+gene_coords$Coord[2]
+nrow(gene_coords)
+genestail <- gene_coords[c((nrow(gene_coords)-5100):nrow(gene_coords)),]
+nrow(genestail)
+```
+
+
+```{r}
+for(i in 1:nrow(gene_coords)){
+  reg <- gene_coords$Coord[i]
+  name <- gene_coords$Gene[i]
+  cp <- CoveragePlot(
+  object = fib.atac,
+  region = reg,
+  extend.upstream = 5000,
+  extend.downstream = 5000) & scale_fill_manual(values = c("#133EDB","#1EAF08","#59DC67","#F01FE6","#B514AB","#390A61","#C055F9"))
+  ggsave(plot=cp, filename=paste0("~/scATAC/web/",name,".jpg"),device="jpeg",dpi=200)
+}
+```
+
+```{r}
+for(i in 1:nrow(genestail)){
+  reg <- genestail$Coord[i]
+  name <- genestail$Gene[i]
+  cp <- CoveragePlot(
+  object = fib.atac,
+  region = reg,
+  extend.upstream = 5000,
+  extend.downstream = 5000) & scale_fill_manual(values = c("#133EDB","#1EAF08","#59DC67","#F01FE6","#B514AB","#390A61","#C055F9"))
+  ggsave(plot=cp, filename=paste0("~/scATAC/web/",name,".jpg"),device="jpeg",dpi=200)
+}
+```
+
+```{r}
+cp<-CoveragePlot(
+  object = fib.atac,
+  region = "chr4-123229076-123229090",
+  extend.upstream = 5000,
+  extend.downstream = 5000
+) & scale_fill_manual(values = c("#133EDB","#1EAF08","#59DC67","#F01FE6","#B514AB","#390A61","#C055F9"))
+cp
+ggsave(plot=cp, filename="peak_pdlim3_ebf1.jpg",device="jpeg",dpi=300)
+```
+```{r}
+FeaturePlot(fib.atac, features="chr3-131138938-131139692")
+```
+
+```{r}
+bwpath ="~/scATAC/bw/"
+bw_e14_1 = paste(bwpath,"e14_1.bw",sep = "")
+bw_e14_2 = paste(bwpath,"e14_2.bw",sep = "")
+bw_e17_1 = paste(bwpath, "e17_1.bw",sep ="")
+bw_e17_2 = paste(bwpath,"e17_2.bw",sep = "")
+bw_inputwt = paste(bwpath,"input_wt.bw",sep = "")
+bw_wt7 = paste(bwpath,"H3K27me3_WT7.bw",sep="")
+bw_wt9 = paste(bwpath,"H3K27me3_WT9.bw",sep="")
+bw_ko3 = paste(bwpath,"H3K27me3_KO3.bw",sep="")
+bw_ko4 = paste(bwpath,"H3K27me3_KO4.bw",sep="")
+bw_inputko = paste(bwpath,"input_KO.bw",sep = "")
+listbw <- list("WT1"=bw_wt7,"WT2"=bw_wt9,"KO1"=bw_ko3,"KO2"=bw_ko4,"Input"=bw_inputko)
+listbwwt<- list("E14_1"=bw_e14_1,"E14_2"=bw_e14_2,"E17_1"=bw_e17_1,"E17_2"=bw_e17_2,"Input"=bw_inputwt)
+```
+
+```{r}
+write.csv(gene_coords, file="gene_coord.csv")
+```
+
+```{r}
+for(i in 1:nrow(gene_coords)){
+  reg <- gene_coords$Coord[i]
+  name <- gene_coords$Gene[i]
+  bwtrack<-BigwigTrack(region=reg,
+            bigwig=listbw,
+            extend.upstream = 5000,
+            extend.downstream = 5000,
+            type="coverage",
+            bigwig.scale='common') & scale_fill_manual(values = c("#BFBFBF","#BFBFBF","#B41E1E","#B41E1E","#000000"))
+  geneplot<-AnnotationPlot(
+    object = fib.atac,
+    region = reg
+  )
+  ct<-CombineTracks(plotlist=list(bwtrack,geneplot))
+  ggsave(plot=ct, filename=paste0("~/scATAC/chipko/",name,".jpg"),device="jpeg",dpi=200)
+}
+```
+
+
+```{r}
+for(i in 1:nrow(genestail)){
+  reg <- genestail$Coord[i]
+  name <- genestail$Gene[i]
+  bwtrack<-BigwigTrack(region=reg,
+            bigwig=listbw,
+            extend.upstream = 5000,
+            extend.downstream = 5000,
+            type="coverage",
+            bigwig.scale='common') & scale_fill_manual(values = c("#BFBFBF","#BFBFBF","#B41E1E","#B41E1E","#000000"))
+  geneplot<-AnnotationPlot(
+    object = fib.atac,
+    region = reg
+  )
+  ct<-CombineTracks(plotlist=list(bwtrack,geneplot))
+  ggsave(plot=ct, filename=paste0("~/scATAC/chipko/",name,".jpg"),device="jpeg",dpi=200)
+}
+```
+
+
+```{r}
+bwtrack<-BigwigTrack(region="chr3-131108471-131224356",
+            bigwig=listbw,
+            extend.upstream = 5000,
+            extend.downstream = 5000,
+            type="coverage",
+            bigwig.scale='common') & scale_fill_manual(values = c("#001FCF","#001FCF","#E77402","#E77402","#000000"))
+geneplot<-AnnotationPlot(
+  object = fib.atac,
+  region = "chr3-131108471-131224356"
+)
+CombineTracks(plotlist=list(bwtrack,geneplot))
+```
+
+
+```{r}
+adipo<-read.csv("./newcombine/macs/adipo.csv",row.names=1)
+dp<-read.csv("./newcombine/macs/dp.csv",row.names=1)
+pap1<-read.csv("./newcombine/macs/pap1.csv",row.names=1)
+pap2<-read.csv("./newcombine/macs/pap2.csv",row.names=1)
+pap3<-read.csv("./newcombine/macs/pap3.csv",row.names=1)
+inter1<-read.csv("./newcombine/macs/inter.csv",row.names=1)
+inter2<-read.csv("./newcombine/macs/inter2.csv",row.names=1)
+retic1<-read.csv("./newcombine/macs/retic1.csv",row.names=1)
+retic2<-read.csv("./newcombine/macs/retic2.csv",row.names=1)
+```
+
+
+```{r}
+hm<-DoHeatmap(object = fib.atac, group.by="time",features = o18$query_region,assay="macs",slot="counts",disp.min=0,disp.max=3,label=FALSE) + scale_fill_gradientn(colors = c("white","red"))
+hm
+ggsave(plot=hm, filename="heatmap_overlap_atac18.jpg",device="jpeg",dpi=300)
+```
+
+
+
+```{r}
+cellsid <- WhichCells(fib.atac,idents=c("Lower Progenitors","Reticular","Intermediate","Pre-adipocytes"))
+```
+
+```{r}
+DefaultAssay(fib.atac)<-"macs"
+```
+
+```{r}
+dp_peaks2 <- FindMarkers(fib.atac, ident.1='Dermal Papillae',ident.2=c("Papillary","Upper Progenitors","Lower Progenitors","Reticular","Intermediate","Pre-adipocytes"))
+dp_peaks1 <- rownames(dp_peaks2[dp_peaks2$p_val_adj < 0.05,])
+adipo_peaks2 <- FindMarkers(fib.atac, ident.1='Pre-adipocytes',ident.2=c("Dermal Papillae","Papillary","Upper Progenitors","Lower Progenitors","Reticular","Intermediate"))
+adipo_peaks1 <- rownames(adipo_peaks2[adipo_peaks2$p_val_adj < 0.05,])
+
+retic_peaks <- FindMarkers(fib.atac, ident.1='Reticular',ident.2=c("Dermal Papillae","Papillary","Upper Progenitors","Lower Progenitors","Intermediate","Pre-adipocytes"))
+retic_peaks1 <- rownames(retic_peaks[retic_peaks$p_val_adj < 0.05,])
+
+pap_peaks <- FindMarkers(fib.atac, ident.1='Papillary',ident.2=c("Dermal Papillae","Upper Progenitors","Lower Progenitors","Reticular","Intermediate","Pre-adipocytes"))
+pap_peaks1 <- rownames(pap_peaks[pap_peaks$p_val_adj < 0.05,])
+```
+```{r}
+saveRDS(fib.atac,"analyzed_fib_atac.rds")
+```
+
+
+```{r}
+saveRDS(dp_peaks2,"dp_peaks_atac.rds")
+saveRDS(adipo_peaks2,"adipo_peaks_atac.rds")
+saveRDS(retic_peaks,"retic_peaks_atac.rds")
+saveRDS(pap_peaks,"pap_peaks_atac.rds")
+```
+
+
+```{r}
+saveRDS(dp_peaks,"dp_peaks_atac_diff.rds")
+saveRDS(adipo_peaks,"adipo_peaks_atac_diff.rds")
+```
+
+```{r}
+dp_features1<-ClosestFeature(fib.atac,dp_peaks1)
+adipo_features<-ClosestFeature(fib.atac,adipo_peaks)
+write_csv(dp_features1,"dp_features1.csv")
+write_csv(adipo_features,"adipo_features.csv")
+```
+
+```{r}
+dp.motif <- FindMotifs(object=fib.atac, features = dp$query_region)
+```
+
+```{r}
+dp.motif<- FindMotifs(fib.atac, features=dp_peaks)
+```
+
+```{r}
+adipo.motif <- FindMotifs(fib.atac,features=adipo_peaks)
+```
+
+```{r}
+DefaultAssay(fib.atac)<-"ATAC"
+```
+```{r}
+sox18m<-getMatrixByID(JASPAR2020,ID="MA1563.1")
+ppargm<-getMatrixByID(JASPAR2020, ID="MA0065.2")
+```
+
+```{r}
+dp_grange<-StringToGRanges(dp_peaks,sep=c("-","-"))
+motifmatrix.dp_sox18 <- matchMotifs(sox18m, dp_grange, genome = BSgenome.Mmusculus.UCSC.mm10,out="positions")
+sox18mm<-annoGR2DF(motifmatrix.dp_sox18@unlistData)
+sox18df<-paste(sox18mm$chr,sox18mm$start,sox18mm$end,sep="-")
+sox18df<-StringToGRanges(sox18df,sep=c("-","-"))
+sox18down<- ClosestFeature(fib.atac,sox18df)
+```
+
+```{r}
+adipo_grange<-StringToGRanges(adipo_peaks,sep=c("-","-"))
+motifmatrix.adipo_pparg <- matchMotifs(ppargm, adipo_grange, genome = BSgenome.Mmusculus.UCSC.mm10,out="positions")
+pparg1<-annoGR2DF(motifmatrix.adipo_pparg@unlistData)
+pparg2<-paste(pparg1$chr,pparg1$start,pparg1$end,sep="-")
+pparg3<-StringToGRanges(pparg2,sep=c("-","-"))
+ppargdf<- ClosestFeature(fib.atac,pparg3)
+```
+
+```{r}
+cebpam<-getMatrixByID(JASPAR2020, ID="MA0102.4")
+adipo_grange<-StringToGRanges(adipo_peaks,sep=c("-","-"))
+motifmatrix.adipo_ceb <- matchMotifs(cebpam, adipo_grange, genome = BSgenome.Mmusculus.UCSC.mm10,out="positions")
+cebpa1<-annoGR2DF(motifmatrix.adipo_pparg@unlistData)
+cebpa2<-paste(cebpa1$chr,cebpa1$start,cebpa1$end,sep="-")
+cebpa3<-StringToGRanges(cebpa2,sep=c("-","-"))
+cebpadf<- ClosestFeature(fib.atac,cebpa3)
+```
+```{r}
+cebpam<-getMatrixByID(JASPAR2020, ID="MA0102.4")
+dp_grange<-StringToGRanges(dp_peaks1,sep=c("-","-"))
+motifmatrix.dp_ceb <- matchMotifs(cebpam, dp_grange, genome = BSgenome.Mmusculus.UCSC.mm10,out="positions")
+cebpa1<-annoGR2DF(motifmatrix.dp_ceb@unlistData)
+cebpa2<-paste(cebpa1$chr,cebpa1$start,cebpa1$end,sep="-")
+cebpa3<-StringToGRanges(cebpa2,sep=c("-","-"))
+cebpadf_dp<- ClosestFeature(fib.atac,cebpa3)
+```
+```{r}
+ebf1<-getMatrixByID(JASPAR2020, ID="MA0154.4")
+dp_grange<-StringToGRanges(dp_peaks1,sep=c("-","-"))
+motifmatrix.dp_ebf <- matchMotifs(ebf1, dp_grange, genome = BSgenome.Mmusculus.UCSC.mm10,out="positions")
+ebf11<-annoGR2DF(motifmatrix.dp_ebf@unlistData)
+ebf12<-paste(ebf11$chr,ebf11$start,ebf11$end,sep="-")
+ebf13<-StringToGRanges(ebf12,sep=c("-","-"))
+ebf1_dp<- ClosestFeature(fib.atac,ebf13)
+
+motifmatrix.ad_ebf <- matchMotifs(ebf1, adipo_grange, genome = BSgenome.Mmusculus.UCSC.mm10,out="positions")
+ebf111<-annoGR2DF(motifmatrix.ad_ebf@unlistData)
+ebf121<-paste(ebf111$chr,ebf111$start,ebf111$end,sep="-")
+ebf131<-StringToGRanges(ebf121,sep=c("-","-"))
+ebf1_ad<- ClosestFeature(fib.atac,ebf131)
+
+write_csv(ebf1_dp,"ebf1_motif_dp_genes.csv")
+write_csv(ebf1_ad,"ebf1_motif_ad_genes.csv")
+```
+
+
+```{r}
+
+write_csv(cebpadf_dp,"cebpa_motif_dp_genes.csv")
+```
+```{r}
+zfp423<-getMatrixByID(JASPAR2020, ID="MA0116.1")
+adipo_grange<-StringToGRanges(adipo_peaks1,sep=c("-","-"))
+motifmatrix.adipo_zfp <- matchMotifs(zfp423, adipo_grange, genome = BSgenome.Mmusculus.UCSC.mm10,out="positions")
+zfp1<-annoGR2DF(motifmatrix.adipo_zfp@unlistData)
+zfp2<-paste(zfp1$chr,zfp1$start,zfp1$end,sep="-")
+zfp3<-StringToGRanges(zfp2,sep=c("-","-"))
+zfp423df_adipo<- ClosestFeature(fib.atac,zfp3)
+
+dp_grange<-StringToGRanges(dp_peaks1,sep=c("-","-"))
+motifmatrix.dp_zfp <- matchMotifs(zfp423, dp_grange, genome = BSgenome.Mmusculus.UCSC.mm10,out="positions")
+zfp11<-annoGR2DF(motifmatrix.dp_zfp@unlistData)
+zfp21<-paste(zfp11$chr,zfp11$start,zfp11$end,sep="-")
+zfp31<-StringToGRanges(zfp21,sep=c("-","-"))
+zfp423df_dp<- ClosestFeature(fib.atac,zfp31)
+```
+```{r}
+
+write_csv(zfp423df_adipo,"zfp_adipo.csv")
+write_csv(zfp423df_dp,"zfp_dp.csv")
+```
+
+
+```{r}
+write_csv(sox18down,"sox18motifgenes.csv")
+write_csv(ppargdf,"ppargmotifgenes.csv")
+write_csv(cebpadf,"cebpamotifgenes.csv")
+```
+
+
+```{r}
+p<-MotifPlot(fib.atac, motifs="MA1563.1")
+p
+ggsave(plot=p,filename="sox18_motif.pdf",device="pdf",dpi=300)
+```
+```{r}
+
+p<-MotifPlot(fib.atac, motifs='MA0065.2')
+p
+ggsave(plot=p,filename="Pparg_motif.pdf",device="pdf",dpi=300)
+```
+
+```{r}
+write_csv(dp.motif,"motif_dp.csv")
+write_csv(adipo.motif,"motif_adipo.csv")
+```
+
+```{r}
+DefaultAssay(fib.atac)<-"ATAC"
+```
+
+```{r}
+pwm <- getMatrixSet(
+  x = JASPAR2020,
+  opts = list(species = "Mus musculus", all_versions = FALSE)
+)
+```
+
+
+
+```{r}
+fib<- AddMotifs(fib.atac, genome = BSgenome.Mmusculus.UCSC.mm10, pfm = pwm)
+```
+
+```{r}
+fib.atac <- Footprint(
+  object = fib.atac,
+  motif.name = c('EBF1','Znf423','TCF7L2'),
+  genome = BSgenome.Mmusculus.UCSC.mm10
+)
+```
+
+
+
+```{r}
+macs2_e18<-readRDS('macs2_peak_e18.rds')
+```
+```{r}
+
+macs2_e18
+```
+
+```{r}
+df <- data.frame(seqnames=seqnames(macs2_e18),
+  starts=start(macs2_e18)-1,
+  ends=end(macs2_e18),
+  strands=strand(macs2_e18))
+```
+
+
+```{r}
+write.table(df, file="atac18.bed", quote=F, sep="\t", row.names=F, col.names=F)
+```
+
+```{r}
+df<-read.csv("./heatmap/velo_open18.csv")
+velofib <- read.csv("./heatmap/velocityfib.csv")
+```
+```{r}
+df14 <- read.csv("./heatmap/dp_velo.csv")
+```
+
+```{r}
+velo_dp_peaks <- read.csv("./heatmap/velolist/dp_velo.csv")
+velo_dp_peaks <- velo_dp_peaks[order(velo_dp_peaks$avg_log2FC),]
+velo_pap_peaks <- read.csv("./heatmap/velolist/pap_velo.csv")
+velo_pap_peaks <- velo_pap_peaks[order(velo_pap_peaks$avg_log2FC),]
+velo_upper_peaks <- read.csv("./heatmap/velolist/upper_velo.csv")
+velo_upper_peaks <- velo_upper_peaks[order(velo_upper_peaks$avg_log2FC),]
+velo_lower_peaks <- read.csv("./heatmap/velolist/lower_velo.csv")
+velo_lower_peaks <- velo_lower_peaks[order(velo_lower_peaks$avg_log2FC),]
+velo_retic_peaks <- read.csv("./heatmap/velolist/retic_velo.csv")
+velo_retic_peaks <- velo_retic_peaks[order(velo_retic_peaks$avg_log2FC),]
+velo_retic1_peaks <- read.csv("./heatmap/velolist/inter_velo.csv")
+velo_retic1_peaks <- velo_retic1_peaks[order(velo_retic1_peaks$avg_log2FC),]
+velo_adipo_peaks <- read.csv("./heatmap/velolist/adipo_velo.csv")
+velo_adipo_peaks <- velo_adipo_peaks[order(velo_adipo_peaks$avg_log2FC),]
+
+
+velo_all_upper <- rbind(velo_upper_peaks, velo_pap_peaks, velo_dp_peaks)
+velo_all_lower <- rbind(velo_lower_peaks, velo_retic_peaks, velo_retic1_peaks, velo_adipo_peaks)
+```
+
+```{r}
+cellsid <- WhichCells(fib.atac,idents=c("Dermal Papillae","Papillary","Upper Progenitors"))
+```
+
+```{r}
+hm <- DoHeatmap(object = fib.atac, cells=cellsid ,features = velo_all_upper$query_region, assay="macs", slot="counts", disp.min=0,disp.max=3,label=FALSE) + scale_fill_gradientn(colors = c("white","red"))
+
+ggsave(plot=hm, filename="heatmap_upper.jpg",device="jpeg",dpi=300)
+```
+
+```{r}
+cellsid1 <- WhichCells(fib.atac,idents=c("Lower Progenitors","Reticular1","Reticular","Pre-adipocytes"))
+hm1<-DoHeatmap(object = fib.atac, cells=cellsid1 ,features = velo_all_lower$query_region, assay="macs", slot="counts", disp.min=0,disp.max=3,label=FALSE) + scale_fill_gradientn(colors = c("white","red"))
+ggsave(plot=hm1, filename="heatmap_lower.jpg",device="jpeg",dpi=300)
+```
+
+
+```{r}
+DimPlot(object = fib.atac, label = TRUE) + NoLegend()
+```
+

@@ -1,0 +1,327 @@
+---
+title: "scATAC analysis of E14.5 and E18.5 fibroblasts"
+output: html_notebook
+---
+
+```{r}
+library(Signac)
+library(Seurat)
+library(GenomeInfoDb)
+library(EnsDb.Mmusculus.v79)
+library(ggplot2)
+library(patchwork)
+library(GenomicRanges)
+library(future)
+library(dplyr)
+library(tidyverse)
+library(JASPAR2020)
+library(TFBSTools)
+library(BSgenome.Mmusculus.UCSC.mm10)
+library(motifmatchr)
+plan("multisession",workers=6)
+options(future.globals.maxSize = 90000*1024^2)
+setwd("~/scATAC/")
+```
+
+```{r}
+pathe14<-"~/e14/"
+e14 <- read.table(file = paste(pathe14,"filtered_peak_bc_matrix/peaks.bed",sep=""),
+                  col.names = c("chr","start","end"))
+e14.peaks <- makeGRangesFromDataFrame(e14)
+#filter bad peaks
+peakwidths <- width(e14.peaks)
+e14.peaks <- e14.peaks[peakwidths  < 10000 & peakwidths > 20]
+md.e14 <- read.table(file = paste(pathe14,"singlecell.csv",sep = ""),
+                     stringsAsFactors = FALSE,
+                     sep=",",
+                     header=TRUE,
+                     row.names=1)[-1, ]
+md.e14 <- md.e14[md.e14$passed_filters >500,]
+frags.e14 <- CreateFragmentObject(
+  path = paste(pathe14,"fragments.tsv.gz",sep=""),
+  cells = rownames(md.e14)
+)
+e14.counts <-FeatureMatrix(
+  fragments = frags.e14,
+  features = e14.peaks,
+  cells = rownames(md.e14)
+)
+
+e14_assay <- CreateChromatinAssay(e14.counts, fragments = frags.e14)
+e14 <- CreateSeuratObject(e14_assay, assay = "ATAC", meta.data=md.e14)
+```
+
+```{r}
+annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Mmusculus.v79)
+annotations <- renameSeqlevels(annotations , mapSeqlevels(seqlevels(annotations),"UCSC"))
+genome(annotations)<-"mm10"
+Annotation(e14)<- annotations
+```
+
+```{r}
+e14 <- NucleosomeSignal(object = e14)
+e14$nucleosome_group <- ifelse(e14$nucleosome_signal > 4, 'NS > 4', 'NS <4')
+FragmentHistogram(object = e14, group.by= 'nucleosome_group', region = 'chr1-1-10000000')
+e14 <- TSSEnrichment(e14, fast=FALSE, assay='ATAC')
+e14$high.tss <- ifelse(e14$TSS.enrichment > 2, 'High','Low')
+TSSPlot(e14, group.by='high.tss') + NoLegend()
+e14$pct_reads_in_peaks <- e14$peak_region_fragments / e14$passed_filters * 100
+e14$blacklist_ratio <- e14$blacklist_region_fragments / e14$peak_region_fragments
+
+VlnPlot(
+  object = e14,
+  features = c('pct_reads_in_peaks', 'peak_region_fragments',
+               'TSS.enrichment', 'blacklist_ratio', 'nucleosome_signal'),
+  pt.size = 0.1,
+  ncol = 5
+)
+```
+
+```{r}
+e14 <- subset(
+  x = e14,
+  subset = peak_region_fragments > 3000 &
+    peak_region_fragments < 100000 &
+    pct_reads_in_peaks > 40 &
+    blacklist_ratio < 0.025 &
+    nucleosome_signal < 4 &
+    TSS.enrichment > 2
+)
+```
+
+```{r}
+e14 <- RunTFIDF(e14)
+e14 <- FindTopFeatures(e14, min.cutoff = 20)
+e14 <- RunSVD(e14)
+e14 <- RunUMAP(
+  object = e14,
+  reduction = 'lsi',
+  dims = 2:30
+)
+e14 <- FindNeighbors(
+  object = e14,
+  reduction = 'lsi',
+  dims = 2:30
+)
+e14 <- FindClusters(
+  object = e14,
+  algorithm = 3,
+  resolution = 0.1,
+  verbose = FALSE
+)
+
+DimPlot(object = e14, label = TRUE) + NoLegend()
+```
+
+```{r}
+fib <- subset(e14, idents = c("0","1","7"))
+```
+
+```{r}
+fib <- RunTFIDF(fib)
+fib <- FindTopFeatures(fib, min.cutoff = 20)
+fib <- RunSVD(fib, assay = "ATAC")
+
+fib <- subset(fib, idents = c("0","1","2","3","4","5","6","7","9"))
+fib <- RunTFIDF(fib)
+fib <- FindTopFeatures(fib, min.cutoff = 20)
+fib <- RunSVD(fib, assay = "ATAC")
+```
+
+```{r}
+# compute gene activities
+gene.activities <- GeneActivity(fib)
+
+# add the gene activity matrix to the Seurat object as a new assay
+fib[['RNA']] <- CreateAssayObject(counts = gene.activities)
+fib <- NormalizeData(
+  object = fib,
+  assay = 'RNA',
+  normalization.method = 'LogNormalize',
+  scale.factor = median(fib$nCount_RNA)
+)
+```
+
+```{r}
+fib <- RunUMAP(
+  object = fib,
+  reduction = 'lsi',
+  dims = 2:30
+)
+fib <- FindNeighbors(
+  object = fib,
+  reduction = 'lsi',
+  dims = 2:30
+)
+fib <- FindClusters(
+  object = fib,
+  algorithm = 3,
+  resolution = 0.3,
+  verbose = FALSE
+)
+DimPlot(object = fib, label = TRUE) + NoLegend()
+```
+
+```{r}
+new_count <- FeatureMatrix(fragments = Fragments(fib), features = peaks, cells = colnames(fib))
+fib[['macs']]<-CreateChromatinAssay(counts = new_count, fragments = Fragments(fib), annotation = fib@assays$ATAC@annotation)
+DefaultAssay(fib)<-'macs'
+```
+
+```{r}
+saveRDS(fib, "fib_e14.rds")
+```
+
+
+Analyze E18
+
+```{r}
+pathe18<-"~/e18/"
+e18 <- read.table(file = paste(pathe18,"filtered_peak_bc_matrix/peaks.bed",sep=""),
+                  col.names = c("chr","start","end"))
+e18.peaks <- makeGRangesFromDataFrame(e18)
+#filter bad peaks
+peakwidths <- width(e18.peaks)
+e18.peaks <- e18.peaks[peakwidths  < 10000 & peakwidths > 20]
+md.e18 <- read.table(file = paste(pathe18,"singlecell.csv",sep = ""),
+                     stringsAsFactors = FALSE,
+                     sep=",",
+                     header=TRUE,
+                     row.names=1)[-1, ]
+md.e18 <- md.e18[md.e18$passed_filters >500,]
+frags.e18 <- CreateFragmentObject(
+  path = paste(pathe18,"fragments.tsv.gz",sep=""),
+  cells = rownames(md.e18)
+)
+e18.counts <-FeatureMatrix(
+  fragments = frags.e18,
+  features = e18.peaks,
+  cells = rownames(md.e18)
+)
+
+e18_assay <- CreateChromatinAssay(e18.counts, fragments = frags.e18)
+e18 <- CreateSeuratObject(e18_assay, assay = "ATAC", meta.data=md.e18)
+```
+
+```{r}
+annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Mmusculus.v79)
+annotations <- renameSeqlevels(annotations , mapSeqlevels(seqlevels(annotations),"UCSC"))
+genome(annotations)<-"mm10"
+Annotation(e18)<- annotations
+```
+
+```{r}
+e18 <- NucleosomeSignal(object = e18)
+e18$nucleosome_group <- ifelse(e18$nucleosome_signal > 4, 'NS > 4', 'NS <4')
+FragmentHistogram(object = e18, group.by= 'nucleosome_group', region = 'chr1-1-10000000')
+e18 <- TSSEnrichment(e18, fast=FALSE, assay='ATAC')
+e18$high.tss <- ifelse(e18$TSS.enrichment > 2, 'High','Low')
+TSSPlot(e18, group.by='high.tss') + NoLegend()
+e18$pct_reads_in_peaks <- e18$peak_region_fragments / e18$passed_filters * 100
+e18$blacklist_ratio <- e18$blacklist_region_fragments / e18$peak_region_fragments
+
+VlnPlot(
+  object = e18,
+  features = c('pct_reads_in_peaks', 'peak_region_fragments',
+               'TSS.enrichment', 'blacklist_ratio', 'nucleosome_signal'),
+  pt.size = 0.1,
+  ncol = 5
+)
+```
+
+```{r}
+e18 <- subset(
+  x = e18,
+  subset = peak_region_fragments > 3000 &
+    peak_region_fragments < 100000 &
+    pct_reads_in_peaks > 40 &
+    blacklist_ratio < 0.025 &
+    nucleosome_signal < 4 &
+    TSS.enrichment > 2
+)
+```
+
+```{r}
+e18 <- RunTFIDF(e18)
+e18 <- FindTopFeatures(e18, min.cutoff = 20)
+e18 <- RunSVD(e18)
+e18 <- RunUMAP(
+  object = e18,
+  reduction = 'lsi',
+  dims = 2:30
+)
+e18 <- FindNeighbors(
+  object = e18,
+  reduction = 'lsi',
+  dims = 2:30
+)
+e18 <- FindClusters(
+  object = e18,
+  algorithm = 3,
+  resolution = 0.1,
+  verbose = FALSE
+)
+
+DimPlot(object = e18, label = TRUE) + NoLegend()
+```
+
+```{r}
+fib <- subset(e18, idents = c("0","1","5","7"))
+fib <- RunTFIDF(fib)
+fib <- FindTopFeatures(fib, min.cutoff = 20)
+fib <- RunSVD(fib, assay = "ATAC")
+```
+
+```{r}
+# compute gene activities
+gene.activities <- GeneActivity(fib)
+
+# add the gene activity matrix to the Seurat object as a new assay
+fib[['RNA']] <- CreateAssayObject(counts = gene.activities)
+fib <- NormalizeData(
+  object = fib,
+  assay = 'RNA',
+  normalization.method = 'LogNormalize',
+  scale.factor = median(fib$nCount_RNA)
+)
+```
+
+```{r}
+fib <- RunUMAP(
+  object = fib,
+  reduction = 'lsi',
+  dims = 2:30
+)
+fib <- FindNeighbors(
+  object = fib,
+  reduction = 'lsi',
+  dims = 2:30
+)
+fib <- FindClusters(
+  object = fib,
+  algorithm = 3,
+  resolution = 0.3,
+  verbose = FALSE
+)
+DimPlot(object = fib, label = TRUE) + NoLegend()
+```
+
+```{r}
+peaks <- CallPeaks(
+  object = fib,
+  group.by = "seurat_clusters",
+  macs2.path = "/home/phoenix/miniconda3/bin/macs2",
+  outdir = "/home/phoenix/scATAC"
+)
+```
+
+```{r}
+new_count <- FeatureMatrix(fragments = Fragments(fib), features = peaks, cells = colnames(fib))
+fib[['macs']]<-CreateChromatinAssay(counts = new_count, fragments = Fragments(fib), annotation = fib@assays$ATAC@annotation)
+DefaultAssay(fib)<-'macs'
+```
+
+
+```{r}
+saveRDS(fib, "fib_e18.rds")
+```
